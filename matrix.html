@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>enclave parentOrigin derivation matrix</title>
+<style>
+  body{font:13px/1.5 ui-monospace,Menlo,monospace;background:#0b0f14;color:#d6e2ee;padding:14px}
+  h1{font-size:14px}
+  table{border-collapse:collapse;width:100%}
+  td{border:1px solid #24384a;padding:6px;vertical-align:top}
+  iframe{width:300px;height:120px;border:1px solid #2a4a63;background:#000}
+  .ok{color:#5f5}.bad{color:#f77}
+</style>
+<h1>parentOrigin derivation — each cell frames enclave.idos.network a different way</h1>
+<p>origin of this page: <b id="me"></b></p>
+<table id="t">
+  <tr><th>variant</th><th>frame</th><th>load reply</th></tr>
+</table>
+<script>
+const ENC = 'https://enclave.idos.network';
+document.getElementById('me').textContent = location.origin;
+
+const variants = [
+  ['control: plain iframe', (f) => {}],
+  ['referrerpolicy=no-referrer', (f) => f.setAttribute('referrerpolicy', 'no-referrer')],
+  ['referrerpolicy=unsafe-url', (f) => f.setAttribute('referrerpolicy', 'unsafe-url')],
+  ['sandbox=allow-scripts (opaque)', (f) => f.setAttribute('sandbox', 'allow-scripts')],
+  ['sandbox=allow-scripts allow-same-origin', (f) => f.setAttribute('sandbox', 'allow-scripts allow-same-origin')],
+  ['nested: same-origin wrapper iframe', null],
+  ['data: URL document', null]
+];
+
+const t = document.getElementById('t');
+const frames = [];
+
+function probe(name, win, cell) {
+  const { port1, port2 } = new MessageChannel();
+  const timer = setTimeout(() => { cell.textContent = 'no reply (parentOrigin mismatch / dead)'; cell.className = 'bad'; }, 4000);
+  port1.onmessage = ({ data }) => {
+    clearTimeout(timer);
+    cell.textContent = 'REPLIED ' + JSON.stringify(data);
+    cell.className = 'ok';
+  };
+  try { win.postMessage({ method: 'load', data: [] }, ENC, [port2]); }
+  catch (e) { cell.textContent = 'postMessage threw: ' + e.message; cell.className = 'bad'; }
+}
+
+variants.forEach(([name, setup], i) => {
+  const tr = document.createElement('tr');
+  const c1 = document.createElement('td'); c1.textContent = name;
+  const c2 = document.createElement('td');
+  const c3 = document.createElement('td'); c3.textContent = '…';
+  tr.append(c1, c2, c3); t.append(tr);
+
+  if (name.startsWith('data:')) {
+    // a data: URL document that itself frames the enclave
+    const inner = '<iframe src="' + ENC + '/" style="width:290px;height:110px"></iframe>';
+    const f = document.createElement('iframe');
+    f.srcdoc = ''; // placeholder
+    f.src = 'data:text/html,' + encodeURIComponent(inner);
+    c2.append(f);
+    f.onload = () => setTimeout(() => {
+      const w = f.contentWindow;
+      if (!w) { c3.textContent = 'no contentWindow'; return; }
+      // the enclave is the data-doc's child; postMessage to it via the data doc
+      w.postMessage({ method: 'ping' }, '*');
+      const inner2 = w.document.querySelector('iframe');
+      if (inner2) probe(name, inner2.contentWindow, c3); else c3.textContent = 'inner iframe missing';
+    }, 2500);
+    return;
+  }
+
+  if (name.startsWith('nested')) {
+    const f = document.createElement('iframe');
+    f.srcdoc = '<iframe src="' + ENC + '/" style="width:280px;height:100px"></iframe>';
+    c2.append(f);
+    f.onload = () => setTimeout(() => {
+      const inner2 = f.contentDocument && f.contentDocument.querySelector('iframe');
+      if (inner2) probe(name, inner2.contentWindow, c3); else c3.textContent = 'inner iframe missing';
+    }, 2000);
+    return;
+  }
+
+  const f = document.createElement('iframe');
+  f.src = ENC + '/';
+  setup(f);
+  c2.append(f);
+  frames.push(f);
+  f.onload = () => setTimeout(() => probe(name, f.contentWindow, c3), 1500);
+});
+</script>
+</html>
