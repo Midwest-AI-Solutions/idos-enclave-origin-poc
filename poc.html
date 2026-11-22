@@ -93,7 +93,10 @@ document.getElementById('b3').onclick = async () => {
   stage('ensureUserEncryptionProfile — click 🔐 inside the frame, set a password, then Accept the origin prompt');
   const r = await call('ensureUserEncryptionProfile');
   show('ensureUserEncryptionProfile', r);
-  if (r && r.result) stage('authorized — public key ' + r.result.userEncryptionPublicKey.slice(0, 16) + '…');
+  if (r && r.result) {
+    localStorage.setItem('poc_pk', r.result.userEncryptionPublicKey);
+    stage('authorized — public key ' + r.result.userEncryptionPublicKey.slice(0, 16) + '…');
+  }
 };
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -102,11 +105,12 @@ const unb64 = (s) => new Uint8Array([...atob(s)].map((c) => c.charCodeAt(0)));
 
 document.getElementById('b4').onclick = async () => {
   stage('encrypt');
-  const r = await call('encrypt', [enc.encode('top-secret-marker-' + Date.now())]);
-  show('encrypt', r);
+  const pk = unb64(localStorage.getItem('poc_pk'));
+  const r = await call('encrypt', [enc.encode('top-secret-marker-' + Date.now()), pk]);
+  show('encrypt', r && r.result ? { content: b64(r.result.content), encryptorPublicKey: b64(r.result.encryptorPublicKey) } : r);
   if (r && r.result) {
     localStorage.setItem('poc_ct', JSON.stringify({
-      content: b64(r.result.content), nonce: b64(r.result.nonce)
+      content: b64(r.result.content), encryptorPublicKey: b64(r.result.encryptorPublicKey)
     }));
     log('stored ciphertext in localStorage', 'dim');
   }
@@ -125,7 +129,7 @@ document.getElementById('b6').onclick = async () => {
   if (!ct) { log('no ciphertext — run step 4 first', 'bad'); return; }
   stage('load + decrypt — NO prompt should appear');
   await call('load');
-  const r = await call('decrypt', [unb64(ct.content), unb64(ct.nonce)]);
+  const r = await call('decrypt', [unb64(ct.content), unb64(ct.encryptorPublicKey)]);
   show('decrypt', r);
   if (r && r.result) log('PLAINTEXT: ' + dec.decode(r.result), 'ok');
 };
@@ -135,7 +139,7 @@ document.getElementById('b7').onclick = async () => {
   if (!ct) { log('no ciphertext — run step 4 first', 'bad'); return; }
   stage('3 silent decrypts');
   for (let i = 0; i < 3; i++) {
-    const r = await call('decrypt', [unb64(ct.content), unb64(ct.nonce)]);
+    const r = await call('decrypt', [unb64(ct.content), unb64(ct.encryptorPublicKey)]);
     show('decrypt#' + (i + 1), r && r.result ? { result: dec.decode(r.result) } : r);
   }
 };
