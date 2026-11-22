@@ -96,12 +96,18 @@ document.getElementById('b3').onclick = async () => {
   if (r && r.result) stage('authorized — public key ' + r.result.userEncryptionPublicKey.slice(0, 16) + '…');
 };
 
+const enc = new TextEncoder(), dec = new TextDecoder();
+const b64 = (u) => btoa(String.fromCharCode(...u));
+const unb64 = (s) => new Uint8Array([...atob(s)].map((c) => c.charCodeAt(0)));
+
 document.getElementById('b4').onclick = async () => {
   stage('encrypt');
-  const r = await call('encrypt', ['top-secret-marker-' + Date.now()]);
+  const r = await call('encrypt', [enc.encode('top-secret-marker-' + Date.now())]);
   show('encrypt', r);
   if (r && r.result) {
-    localStorage.setItem('poc_ct', JSON.stringify(r.result));
+    localStorage.setItem('poc_ct', JSON.stringify({
+      content: b64(r.result.content), nonce: b64(r.result.nonce)
+    }));
     log('stored ciphertext in localStorage', 'dim');
   }
 };
@@ -119,9 +125,9 @@ document.getElementById('b6').onclick = async () => {
   if (!ct) { log('no ciphertext — run step 4 first', 'bad'); return; }
   stage('load + decrypt — NO prompt should appear');
   await call('load');
-  const r = await call('decrypt', [ct.content, ct.nonce]);
+  const r = await call('decrypt', [unb64(ct.content), unb64(ct.nonce)]);
   show('decrypt', r);
-  if (r && r.result) log('PLAINTEXT: ' + r.result, 'ok');
+  if (r && r.result) log('PLAINTEXT: ' + dec.decode(r.result), 'ok');
 };
 
 document.getElementById('b7').onclick = async () => {
@@ -129,8 +135,8 @@ document.getElementById('b7').onclick = async () => {
   if (!ct) { log('no ciphertext — run step 4 first', 'bad'); return; }
   stage('3 silent decrypts');
   for (let i = 0; i < 3; i++) {
-    const r = await call('decrypt', [ct.content, ct.nonce]);
-    show('decrypt#' + (i + 1), r);
+    const r = await call('decrypt', [unb64(ct.content), unb64(ct.nonce)]);
+    show('decrypt#' + (i + 1), r && r.result ? { result: dec.decode(r.result) } : r);
   }
 };
 
